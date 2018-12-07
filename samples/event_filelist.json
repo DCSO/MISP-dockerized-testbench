@@ -1,0 +1,10 @@
+{
+    "event1":{
+        "active": true,
+        "file_name": "5bf26acf-d95c-4892-a05d-4db5950d210f.json"
+    },
+    "event2":{
+        "active": true,
+        "file_name": "5614b57d-0f58-4c26-ad03-6aac950d210b.json"
+    }
+}
