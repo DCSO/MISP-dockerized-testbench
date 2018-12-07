@@ -6,6 +6,7 @@ import uuid
 import requests
 import json
 import pymisp
+import xmlrunner
 
 from requests import HTTPError, ConnectionError, ConnectTimeout
 from pymisp import PyMISP, MISPOrganisation, MISPUser, MISPEvent, MISPAttribute, PyMISPError
@@ -335,4 +336,8 @@ class MISPFeedAndServerHandling(unittest.TestCase):
         pass
 
 if __name__ == '__main__':
-     unittest.main()
+    #unittest.main()
+    with open('reports/results.xml', 'wb') as output:
+        unittest.main(
+            testRunner=xmlrunner.XMLTestRunner(output=output),
+            failfast=False, buffer=False, catchbreak=False)
