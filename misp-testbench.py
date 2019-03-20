@@ -11,6 +11,10 @@ import xmlrunner
 from requests import HTTPError, ConnectionError, ConnectTimeout
 from pymisp import PyMISP, MISPOrganisation, MISPUser, MISPEvent, MISPAttribute, PyMISPError
 
+# Deactivate InsecureRequestWarnings
+from requests.packages.urllib3.exceptions import InsecureRequestWarning
+requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
+
 def readInSettings():
     try:
         with open("settings.json", "r") as settings_file:
