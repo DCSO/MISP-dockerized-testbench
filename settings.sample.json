@@ -4,5 +4,7 @@
     "authkey": "f5UuW70H3PHo5MkYU5DyFwx44t5Ni7K0DEmML8XU",
     "basic_user": "admin@admin.test",
     "basic_password": "admin",
-    "password": "ChangeMe123456!"
+    "password": "ChangeMe123456!",
+    "loglevel": "info",
+    "log2file": "False"
 }
