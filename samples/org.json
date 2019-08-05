@@ -3,7 +3,7 @@
         "name": "Admin Corp",    
         "description": "Test Organisation", 
         "contacts": "support@admin.corp.test", 
-        "local": "true",     
+        "local": "True",
         "uuid": "16fd2706-6654-82eb-8baf-8c7fada847da",
         "nationality": "German",
         "sector": "IT Security"
@@ -12,7 +12,7 @@
         "name": "EMCA",    
         "description": "Test Organisation", 
         "contacts": "support@misp.emca.test", 
-        "local": "true",     
+        "local": "True",
         "uuid": "16fd2706-8baf-433b-82eb-8c7fada847da",
         "nationality": "French",
         "sector": "Bank sector"

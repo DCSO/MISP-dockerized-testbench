@@ -1,3 +1,6 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import unittest
 import os
 import time
@@ -7,13 +10,32 @@ import requests
 import json
 import pymisp
 import xmlrunner
+import urllib3
+from pymisp.tools import make_binary_objects
+from datetime import datetime, timedelta, date
+from io import BytesIO
+import re
+import json
+from pathlib import Path
+import time
+from uuid import uuid4
+import sys
+import logging
 
 from requests import HTTPError, ConnectionError, ConnectTimeout
-from pymisp import PyMISP, MISPOrganisation, MISPUser, MISPEvent, MISPAttribute, PyMISPError
+try:
+    from pymisp import ExpandedPyMISP, MISPEvent, MISPOrganisation, MISPUser, Distribution, ThreatLevel, Analysis, MISPObject, MISPAttribute, MISPSighting, MISPShadowAttribute, MISPTag, MISPSharingGroup, MISPFeed, MISPServer, PyMISPError, MISPServerError
+    from pymisp.tools import CSVLoader, DomainIPObject, ASNObject, GenericObjectGenerator
+except ImportError:
+    if sys.version_info < (3, 6):
+        print('This test suite requires Python 3.6+, breaking.')
+        sys.exit(0)
+    else:
+        raise
 
-# Deactivate InsecureRequestWarnings
-from requests.packages.urllib3.exceptions import InsecureRequestWarning
-requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
+
+urllib3.disable_warnings()
+
 
 def readInSettings():
     try:
@@ -24,6 +46,7 @@ def readInSettings():
         print ("Error settings file not found or invalid")
         raise RuntimeError
 
+
 def readInFile(filename):
     try:
         with open(filename, "r") as settings_file:
@@ -33,18 +56,46 @@ def readInFile(filename):
         print ("Error settings file not found or invalid")
         raise RuntimeError
 
-def connectMISP():    
+
+def connectMISP():
     misp_settings = readInSettings()
     misp_url = misp_settings['url']
     misp_key = misp_settings['authkey']
+    logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+
     if misp_settings['verify_cert'] is "False" or misp_settings['verify_cert'] == "False":
             misp_verifycert = False
     try:
-        misp = PyMISP(misp_url, misp_key, misp_verifycert)
+        misp = ExpandedPyMISP(misp_url, misp_key, misp_verifycert, debug=False)
         return misp
-    except PyMISPError as e:
-        print(e)
+
+    except (PyMISPError, MISPServerError) as e:
+        logging.warning("Error: Can not connect to MISP")
+        logging.warning(e)
         return False
+
+
+logg_sets = readInSettings()
+logg_err = True
+if "loglevel" in logg_sets and "log2file" in logg_sets:
+    if "True" in logg_sets['log2file']:
+        if "debug" in logg_sets['loglevel']:
+            logging.basicConfig(filename='logs/test_output.log', filemode='w', format='%(asctime)s - %(levelname)s - %(message)s', level=logging.DEBUG)
+            logg_err = False
+        if "info" in logg_sets['loglevel']:
+            logging.basicConfig(filename='logs/test_output.log', filemode='w', format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
+            logg_err = False
+else:
+    if "debug" in logg_sets['loglevel']:
+        logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.DEBUG)
+        logg_err = False
+    else:
+        logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
+        logg_err = False
+
+if logg_err:
+    #Switching back to default
+    logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 
 class MISPConnection(unittest.TestCase):
@@ -66,8 +117,9 @@ class MISPConnection(unittest.TestCase):
         if misp_settings['verify_cert'] is "False" or misp_settings['verify_cert'] == "False":
             misp_verifycert = False
 
+        logging.info("Connection - Checking if Nginx is available")
         r = requests.get(misp_settings['url'], verify=misp_verifycert)
-        self.assertIsNot(r.status_code, 502, msg="Nginx works as normal")
+        self.assertIsNot(r.status_code, 502, msg="Nginx sent error code 502 - MISP not available")
 
     def test_BasicConnection(self):
         misp_settings = readInSettings()
@@ -75,8 +127,9 @@ class MISPConnection(unittest.TestCase):
         if misp_settings['verify_cert'] is "False" or misp_settings['verify_cert'] == "False":
             misp_verifycert = False
 
+        logging.info("Connection - Checking if MISP came up without errors")
         r = requests.get(misp_settings['url'], verify=misp_verifycert)        
-        self.assertIs(r.status_code, 200, msg="MISP is not available or an internal error occured")
+        self.assertIs(r.status_code, 200, msg="MISP is not available or an internal error occurred")
 
 class MISPCoreFunctions(unittest.TestCase):
     #Tests if the core functions of MISP like Tags, Objects, Galaxy can be updated correctly and if they work 
@@ -85,59 +138,66 @@ class MISPCoreFunctions(unittest.TestCase):
     def setUp(self):
         self._misp = connectMISP()
 
-    def test_UpdateTaxonomies(self):
-        # At Start, there should'nt be a taxonomie
-        response = self._misp.get_taxonomies_list()
-        #self.assertEqual(len(response['response']), 0)
-
+    def test_Taxonomies(self):
         # Update taxonomies - if everything is fine MISP respond with "Successfully updated"
+        logging.info("Taxonomies - Check if taxonomies can be updated")
         response = self._misp.update_taxonomies()
-        self.assertTrue("Successfully updated" in response['message'])
+        self.assertTrue("Successfully updated" in response['message'] or "up to date" in response['message'], msg="MISP taxonomies can not be updated")
 
         # Updated list of taxonomies should have more than 10 entries
-        response = self._misp.get_taxonomies_list()
-        self.assertGreaterEqual(len(response['response']), 10)
-        #Maybe add a check for tags here as example tlp:green
+        logging.info("Taxonomies - Check if there are more then 10 taxonomies available")
+        list_taxonomies = self._misp.taxonomies(pythonify=True)
+        self.assertGreaterEqual(len(list_taxonomies), 10, msg="MISP responded only with a list of less then 10 available taxonomies - there should be more")
 
-
-    def test_EnableTaxonomies(self):
-        list_taxonomies = self._misp.get_taxonomies_list()
-        for item in list_taxonomies['response']:
-            if 'tlp' in item['Taxonomy']['namespace']:
-                response = self._misp.enable_taxonomy(item['Taxonomy']['id'])
+        for item in list_taxonomies:
+            if 'tlp' in item['namespace']:
+                logging.info("Taxonomies - Check if TLP can be enabled")
+                response = self._misp.enable_taxonomy(item['id'])
                 # if the taxonomy was successfully updated MISP responses with 'Taxonomy enabled'
-                self.assertTrue("Taxonomy enabled" in response['message'])
+                self.assertTrue("Taxonomy enabled" in response['message'], msg="TLP taxonomy could not be enabled")
 
-                response = self._misp.get_taxonomy_tags_list(item['Taxonomy']['id'])
+                logging.info("Taxonomies - Check if TLP taxonomy contains at least 4 tags")
+                response = self._misp.enable_taxonomy_tags(item['id'])
+                # self.assertTrue("Something" in response['message'])
+                response = self._misp.get_taxonomy_tags_list(item['id'])
+                # usually the TLP taxonomy has at least 4 tags
+                self.assertGreaterEqual(len(response), 4, msg="TLP taxonomy has less than 4 entries - there should be at least 4")
                 pass
 
     
-    def test_UpdateGalaxies(self):
+    def test_Galaxies(self):
         # At Start, there should'nt be a galaxie
         response = self._misp.get_galaxies()
         #self.assertEqual(len(response['response']), 0)
 
         # Update galaxies - if everything is fine MISP respond with "Galaxies updated."
+        logging.info("Galaxies - Check if galaxies can be updated")
         response = self._misp.update_galaxies()
-        self.assertTrue("Galaxies updated" in response['message'])
+        self.assertTrue("Galaxies updated" in response['message'], msg="Galaxies could not be updated")
 
         # Updated list of galaxie should have more than 10 entries
-        response = self._misp.get_galaxies()
-        self.assertGreaterEqual(len(response['response']), 10)
+        logging.info("Galaxies - Check if there are at least 10 galaxies")
+        response = self._misp.galaxies(pythonify=True)
+        self.assertGreaterEqual(len(response), 10, msg="MISP responded only with a list of less then 10 available galaxies - there should be more")
+
+        for item in response:
+            if "Threat Actor" in item.name:
+                logging.info("Galaxies - Try to get galaxy \"Threat Actor\" by id")
+                r = self._misp.get_galaxy(item.id, pythonify=True)
+                self.assertTrue("Threat Actor" in r.name, msg="Threat Actor galaxy could not be found")
+        pass
 
 
-    def test_UpdateObjects(self):
+    def test_Objects(self):
         # At Start, there should'nt be a taxonomie
-        response = self._misp.get_object_templates_list()        
-        #self.assertEqual(len(response['response']), 0)
-
-        # Update object templates - if everything is fine MISP respond with the list of object templates
+        logging.info("Objects - Try update object templates")
         response = self._misp.update_object_templates()
-        self.assertGreaterEqual(len(response['response']), 10)
 
-        # Updated list of objects should have more than 10 entries
-        response = self._misp.get_object_templates_list()
-        self.assertGreaterEqual(len(response['response']), 10)
+        logging.info("Objects - Checking of MISP responded the object template list and if list has at leas 10 items")
+        self.assertIsInstance(response, list, msg="MISP does not responded with a list of objects")
+        self.assertGreaterEqual(len(response), 10, msg="MISP responded only with a list of less then 10 available objects - there sould be more")
+        pass
+
 
 
 class MISPUserManagement(unittest.TestCase):    
@@ -148,85 +208,107 @@ class MISPUserManagement(unittest.TestCase):
     def setUp(self):
         self._misp = connectMISP()
 
-    def test_GetUserList(self):
-        r = self._misp.get_users_list()
-        self.assertIsInstance(r, dict, "Response has to be a list of elements")
-        self.assertGreater(len(r['response']), 0, "Initial list of orgs must be greater than 0")
+    def test_CheckAdminUser(self):
+        logging.info("AdminManagement - Check if the first - the admin org - exists")
+        response = self._misp.organisations(pythonify=True)
+        self.assertGreater(len(response), 0, msg="MISP responded with 0 available organisations - admin org is missing")
+
+        logging.info("AdminManagement - Check if at least 1 user - the admin - user exists")
+        response = self._misp.users(pythonify=True)
+        self.assertGreater(len(response), 0, "MISP responded with 0 available users - admin user is missing ")
+
+        logging.info("AdminManagement - Check if user has admin rights")
+        self.assertTrue(response[0].role_id is '1', msg="The initial admin user has no admin rights")
+        pass
 
 
-    def test_OrgAndUserTest(self):
+    def test_Organisations(self):
         """ 
         This test creats new organisations from the org.json file and adds user from the user.json file to it.
         After all organisations and user are created the tests removes them and checks if they are correctly removed
         """
         
         ### Create organisations from org.json file
-        list_orgs = self._misp.get_organisations_list()
-        self.assertEqual(len(list_orgs['response']), 1, "List of orgs must be 1")
+
 
         org_list = readInFile("samples/org.json")        
         tested_keys = ['name', 'description', 'nationality', 'sector', 'uuid', 'contacts']
 
-        for item in org_list:
-            response = self._misp.add_organisation(
-                name=org_list[item]['name'],
-                description=org_list[item]['description'],
-                nationality=org_list[item]['nationality'],
-                sector=org_list[item]['sector'],
-                uuid=org_list[item]['uuid'],
-                contacts=org_list[item]['contacts'],
-                local=org_list[item]['local']
-            )       
-            self.assertIsInstance(response, dict, "Response has to be a dict of elements")
-            for k in tested_keys:
-                self.assertEqual(org_list[item][k], response['Organisation'][k])
-            #rof
-        #rof 
 
-        list_orgs = self._misp.get_organisations_list()
-        self.assertEqual(len(list_orgs['response']), 3, "List of orgs must be 3")
+        for item in org_list:
+            org = MISPOrganisation()
+            org.name = org_list[item]['name']
+            org.description = org_list[item]['description']
+            org.nationality = org_list[item]['nationality']
+            org.sector = org_list[item]['sector']
+            org.uuid = org_list[item]['uuid']
+            org.contacts = org_list[item]['contacts']
+            #org.local = org_list[item]['local']
+
+            logging.info("OrgManagement - try to create organization \"" + org_list[item]['name'] + "\"")
+            response = self._misp.add_organisation(org, pythonify=True)
+
+            self.assertTrue(org_list[item]['uuid'] in response.uuid, msg="The created organisation has no or a wrong UUID")
+            self.assertTrue(org_list[item]['name'] in response.name, msg="The created organisation has no or a wrong name")
+            self.assertTrue(org_list[item]['description'] in response.description, msg="The created organisation has no or a wrong description")
+            self.assertTrue(org_list[item]['nationality'] in response.nationality, msg="The created organisation has no or a wrong nationality")
+            self.assertTrue(response.local, msg="The created organisation is not a local organisation but should be a local organisation")
+            self.assertTrue(org_list[item]['sector'] in response.sector, msg="The created organisation has no or a wrong sector")
+
+        response = self._misp.organisations(scope="local", pythonify=True)
+        logging.info("OrgManagement - check if the admin and both test organisations exist")
+        self.assertGreaterEqual(len(response), 3, "MISP responded with less then 3 existing organisations - there shold exactly be 3")
 
         ### Add new user from the user.json file
         list_user = readInFile("samples/user.json")
-        current_org_list = self._misp.get_organisations_list(scope='local')
+        users = self._misp.users(pythonify=True)
         for item in list_user:
-            for org in current_org_list['response']:
-                if org['Organisation']['name'] == list_user[item]['org_id']:
-                    response = self._misp.add_user(list_user[item]['email'], org['Organisation']['id'], list_user[item]['role_id'])
-                    self.assertIsInstance(response, dict, "Response has to be a dict of elements")
-                    self.assertEqual(list_user[item]['email'], response['User']['email'])
-                    self.assertEqual(org['Organisation']['id'], response['User']['org_id'])
-                    self.assertEqual(list_user[item]['role_id'], response['User']['role_id'])
+            for org in response:
+                if org.name in list_user[item]['org_id']:
+                    logging.info("OrgManagement - try to add user \"" + list_user[item]['email'] + "\"")
+                    usr = MISPUser()
+                    usr.email = list_user[item]['email']
+                    usr.org_id = org.id
+                    usr.role_id = list_user[item]['role_id']
+
+                    usr_response = self._misp.add_user(usr, pythonify=True)
+
                     # legnth of regular authkeys is 40 chars or longer
-                    self.assertGreaterEqual(len(response['User']['authkey']), 40)
+                    self.assertTrue(usr_response.email in list_user[item]['email'], msg="The created users has no or a wrong email")
+                    self.assertTrue(usr_response.role_id in list_user[item]['role_id'], msg="The created users has no or a wrong role id")
+                    self.assertGreaterEqual(len(usr_response.authkey), 40, msg="MISP responded with a wrong authkey - should be exactly 40 chars")
 
         ### An authentication test could be inserted here
 
-        ### An user change role test coul be inserted here
+        ### An user change role test could be inserted here
 
-        ### Remove new user
-        response = self._misp.get_users_list()        
-        for item in response['response']:
-            for user in list_user:
-                if item['User']['email'] == list_user[user]['email']:
-                    response = self._misp.delete_user(item['User']['id'])
-                    self.assertTrue('User deleted' in response['message'])
+        logging.info("OrgManagement - check if all user where created successfully")
+        response = self._misp.users(pythonify=True)
+        self.assertGreaterEqual(len(response), len(list_user), msg="MISP responded with a wrong number of users - it seems that not all users could be created.")
 
-        response = self._misp.get_users_list()
-        self.assertEqual(len(response['response']), 1, "List of user must be 1 (admin user)")
+        for item in response:
+            if item.org_id not in '1' or item.id not in '1':
+                logging.info("OrgManagement - try to delete user \"" + item.email + "\"")
+                usr_response = self._misp.delete_user(item)
+                self.assertTrue("User deleted" in usr_response['message'], msg="User could ne be deleted")
+                pass
+
+        logging.info("OrgManagement - check if user list now only contains the admin user")
+        response = self._misp.users(pythonify=True)
+        self.assertEqual(len(response), 1, "MISP responded with a wrong number of users - it seems that not all users could be deleted.")
 
         ### Remove organisations
-        org_list = readInFile("samples/org.json")
-        response = self._misp.get_organisations_list()
-        for item in response['response']:
-            for org_item in org_list:
-                if item['Organisation']['name'] == org_list[org_item]['name']:
-                    response = self._misp.delete_organisation(item['Organisation']['id'])
-                    self.assertTrue('Organisation deleted' in response['message'])
-                    # Assert is missing here
-        
-        response = self._misp.get_organisations_list()
-        self.assertEqual(len(response['response']), 1, "List of orgs must be 1")
+        response = self._misp.organisations(pythonify=True)
+        for item in response:
+            if item.id not in "1":
+                logging.info("Try to remove organization: \"" + item.name + "\"")
+                org_response = self._misp.delete_organisation(item)
+                self.assertTrue('deleted' in org_response['message'], msg="Organisations could not be deleted from MISP")
+            pass
+
+        response = self._misp.organisations(pythonify=True)
+        logging.info("OrgManagement - check if only admin org exist")
+        self.assertEqual(len(response), 1, msg="MISP responded with a wrong number of organisations - it seems that not all organisations could be deleted.")
 
     @unittest.skip("Not yet implemented") 
     def test_ChangeUserRole(self):
@@ -250,32 +332,52 @@ class MISPEventHandling(unittest.TestCase):
     
     def test_CreateSearchRemoveEvents(self):
         """
-        This test creats, searches and removes sample events from templates wich can be definied in the event_list.json file.
+        This test creat's, searches and removes sample events from templates which can be defined in the event_list.json file.
         """
+        logging.info("EventHandling - This test creat's, searches and removes sample events from templates which can be defined in the event_list.json file.")
         file_list = readInFile("samples/event_filelist.json")
 
-        # Create events from samples
-        for item in file_list:
-            if file_list[item]['active']:
-                event = readInFile("samples/" + str(file_list[item]['file_name']))
-                sample = event['response'][0]
-                response = self._misp.add_event(sample)
-            pass
-            # Assert is missing here
-
-        for item in file_list:
-            if file_list[item]['active']:
-                event = readInFile("samples/" + str(file_list[item]['file_name']))
-                sample = event['response'][0]
-                # if sample is found MISP should respond with the corresponding event
-                response = self._misp.search_index(eventinfo=sample['Event']['info'])
-                self.assertEqual(sample['Event']['info'], response['response'][0]['info'])
-                
-                # try to delete the event
-                response = self._misp.delete_event(response['response'][0]['id'])
-                # if the event was successfully deleted MISP respond with "Event deleted"
-                self.assertTrue('Event deleted' in response['message'])
+        try:
+            # Create events from samples
+            logging.info("EventHandling - Try to create MISP events from files")
+            for item in file_list:
+                if file_list[item]['active']:
+                    event = readInFile("samples/" + str(file_list[item]['file_name']))
+                    sample = event['response'][0]
+                    attr_len1 = len(sample['Event']['Attribute'])
+                    obj_len1 = len(sample['Event']['Object'])
+                    logging.info("EventHandling - Try to add event with name: " + sample['Event']['info'])
+                    response = self._misp.add_event(sample)
+                    if 'errors' not in response:
+                        attr_len2 = len(response['Event']['Attribute'])
+                        obj_len2 = len(response['Event']['Object'])
+                        # Skip Test
+                        self.assertGreater(attr_len1, 0, "Created event has 0 attributes - there should be at least 1")
+                        #self.assertEqual(attr_len1, attr_len2)
+                        #self.assertEqual(obj_len1, obj_len2)
                 pass
+
+            logging.info("EventHandling - Try to search for specific events on index")
+            for item in file_list:
+                if file_list[item]['active']:
+                    event = readInFile("samples/" + str(file_list[item]['file_name']))
+                    sample = event['response'][0]
+                    # if sample is found MISP should respond with the corresponding event
+                    logging.info("EventHandling - Searching for event: " + sample['Event']['info'])
+                    response = self._misp.search_index(eventinfo=sample['Event']['info'], pythonify=True)
+                    self.assertEqual(sample['Event']['info'], response[0].info, msg="MISP responded with an event whose info field does not match the given event info")
+
+                    # try to delete the event
+                    logging.info("EventHandling - Try to delete event with ID: " + str(response[0].id) + " from index")
+                    response = self._misp.delete_event(response[0].id)
+                    # if the event was successfully deleted MISP respond with "Event deleted"
+                    self.assertTrue('Event deleted' in response['message'], msg="Given event could not be deleted")
+
+                    pass
+
+        except (MISPServerError, PyMISPError) as e:
+            logging.error("EventHandling - Error executing tests")
+            logging.error(e)
 
 
     @unittest.skip("Not yet implemented") 
@@ -339,8 +441,8 @@ class MISPFeedAndServerHandling(unittest.TestCase):
     def test_removeRemoteServer(self):
         pass
 
+
 if __name__ == '__main__':
-    #unittest.main()
     with open('reports/results.xml', 'wb') as output:
         unittest.main(
             testRunner=xmlrunner.XMLTestRunner(output=output),
