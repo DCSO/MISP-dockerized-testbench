@@ -411,6 +411,22 @@ class MISPEventHandling(unittest.TestCase):
             logging.error("EventHandling - Error executing tests")
             logging.error(e)
 
+    def test_AddTag(self):
+        logging.info(
+            "EventHandling - This test adds tags to sample events from templates which can be defined in the event_list.json file.")
+        file_list = readInFile("samples/event_filelist.json")
+        logging.info("EventHandling - Try to create MISP events from files")
+        for item in file_list:
+            if file_list[item]['active']:
+                event = readInFile("samples/" + str(file_list[item]['file_name']))
+                sample = event['response'][0]
+                logging.info("EventHandling - Try to add event with name: " + sample['Event']['info'])
+                response = self._misp.add_event(sample)
+                if 'errors' not in response:
+                    response.add_attribute_tag('tlp:amber', 696715)
+                    self.assertEqual(response.get_attribute_tag(696715)[0].value, 'tlp:amber')
+            pass
+
     @unittest.skip("Not yet implemented")
     def test_ModifyEventAttributes(self):
         pass
